@@ -5,7 +5,7 @@ use strict;
 
 require 5.008;
 
-our $VERSION = '1.01';
+our $VERSION = '1.02';
 
 use Carp     qw(croak);
 use Exporter qw(import);
@@ -16,28 +16,39 @@ our @EXPORT_OK = qw(fix_latin);
 
 my $byte_map;
 
-my $ascii_char = '[\x00-\x7F]';
-my $cont_byte  = '[\x80-\xBF]';
+my $ascii_str = qr{\A([\x00-\x7F]+)(.*)\z}s;
 
-my $utf8_2     = '[\xC0-\xDF]' . $cont_byte;
-my $utf8_3     = '[\xE0-\xEF]' . $cont_byte . '{2}';
-my $utf8_4     = '[\xF0-\xF7]' . $cont_byte . '{3}';
-my $utf8_5     = '[\xF8-\xFB]' . $cont_byte . '{4}';
+my $cont_byte = '[\x80-\xBF]';
+my $utf8_2    = qr{\A([\xC0-\xDF])($cont_byte)(.*)\z}s;
+my $utf8_3    = qr{\A([\xE0-\xEF])($cont_byte)($cont_byte)(.*)\z}s;
+my $utf8_4    = qr{\A([\xF0-\xF7])($cont_byte)($cont_byte)($cont_byte)(.*)\z}s;
+my $utf8_5    = qr{\A([\xF8-\xFB])($cont_byte)($cont_byte)($cont_byte)($cont_byte)(.*)\z}s;
 
-my $nibble_good_chars = qr{^($ascii_char+|$utf8_2|$utf8_3|$utf8_4|$utf8_5)(.*)$}s;
+my %known_opt = map { $_ => 1 } qw(bytes_only ascii_hex overlong_fatal);
 
-my %known_opt = map { $_ => 1 } qw(bytes_only);
+my %non_1252  = (
+    "\x81" => '%81',
+    "\x8D" => '%8D',
+    "\x8F" => '%8F',
+    "\x90" => '%90',
+    "\x9D" => '%9D',
+);
 
 sub fix_latin {
     my $input = shift;
-    my %opt   = @_;
+    my %opt   = (
+        ascii_hex      => 1,
+        bytes_only     => 0,
+        overlong_fatal => 0,
+        @_
+    );
 
     foreach (keys %opt) {
         croak "Unknown option '$_'" unless $known_opt{$_};
     }
 
     return unless defined($input);
-    _init_byte_map() unless $byte_map;
+    _init_byte_map(\%opt) unless $byte_map;
 
     if(is_utf8($input)) {       # input string already has utf8 flag set
         if($opt{bytes_only}) {
@@ -51,18 +62,57 @@ sub fix_latin {
     my $output = '';
     my $char   = '';
     my $rest   = '';
+    my $olf    = $opt{overlong_fatal};
     while(length($input) > 0) {
-        if(($char, $rest) = $input =~ $nibble_good_chars) {
-            $output .= $char;
+        if($input =~ $ascii_str) {
+            $output .= $1;
+            $rest = $2;
+        }
+        elsif($input =~ $utf8_2) {
+            $output .= _decode_utf8($olf, ord($1) & 0x1F, $1, $2);
+            $rest = $3;
+        }
+        elsif($input =~ $utf8_3) {
+            $output .= _decode_utf8($olf, ord($1) & 0x0F, $1, $2, $3);
+            $rest = $4;
+        }
+        elsif($input =~ $utf8_4) {
+            $output .= _decode_utf8($olf, ord($1) & 0x07, $1, $2, $3, $4);
+            $rest = $5;
+        }
+        elsif($input =~ $utf8_5) {
+            $output .= _decode_utf8($olf, ord($1) & 0x03, $1, $2, $3, $4, $5);
+            $rest = $6;
         }
         else {
             ($char, $rest) = $input =~ /^(.)(.*)$/s;
-            $output .= $byte_map->{$char};
+            if($opt{ascii_hex} && exists $non_1252{$char}) {
+                $output .= $non_1252{$char};
+            }
+            else {
+                $output .= $byte_map->{$char};
+            }
         }
         $input = $rest;
     }
     utf8::decode($output) unless $opt{bytes_only};
     return $output;
+}
+
+
+sub _decode_utf8 {
+    my $overlong_fatal = shift;
+    my $c              = shift;
+    my $byte_count     = @_;
+    foreach my $i (1..$#_) {
+        $c = ($c << 6) + (ord($_[$i]) & 0x3F);
+    }
+    my $bytes = encode_utf8(chr($c));
+    if($overlong_fatal and $byte_count > length($bytes)) {
+        my $hex_bytes= join ' ', map { sprintf('%02X', ord($_)) } @_;
+        croak "Over-long UTF-8 byte sequence: $hex_bytes";
+    }
+    return $bytes;
 }
 
 
@@ -162,12 +212,19 @@ Well-formed UTF-8 multi-byte characters are also passed through unchanged.
 
 =item *
 
+UTF-8 multi-byte character which are over-long but otherwise well-formed are
+converted to the shortest UTF-8 normal form.
+
+=item *
+
 Bytes in the range 0xA0 - 0xFF are assumed to be Latin-1 characters (ISO8859-1
 encoded) and are converted to UTF-8.
 
 =item *
 
-Bytes in the range 0x80 - 0x9F are assumed to be Win-Latin-1 characters (CP1252 encoded) and are converted to UTF-8.
+Bytes in the range 0x80 - 0x9F are assumed to be Win-Latin-1 characters (CP1252
+encoded) and are converted to UTF-8.  Except for the five bytes in this range
+which are not defined in CP1252 (see the C<ascii_hex> option below).
 
 =back
 
@@ -182,8 +239,8 @@ However if the 'bytes_only' option is specified (see below), the returned
 string will be a byte string rather than a character string.  The rules
 described above will not be applied in either case.
 
-The C<fix_latin> function accepts options as name => value pairs.  Currently
-only one option is recognised:
+The C<fix_latin> function accepts options as name => value pairs.  Recognised
+options are:
 
 =over 4
 
@@ -195,6 +252,58 @@ C<bytes_only> option to a true value, the returned string will be a binary
 string of UTF-8 bytes.  The utf8 flag will not be set.  This is useful if
 you're going to immediately use the string in an IO operation and wish to avoid
 the overhead of converting to and from Perl's internal representation.
+
+=item ascii_hex => 1/0
+
+Bytes in the range 0x80-0x9F are assumed to be CP1252, however CP1252 does not
+define a mapping for 5 of these bytes (0x81, 0x8D, 0x8F, 0x90 and 0x9D).  Use
+this option to specify how they should be handled:
+
+=over 4
+
+=item *
+
+If the ascii_hex option is set to true (the default), these bytes will be
+converted to 3 character ASCII hex strings of the form %XX.  For example the
+byte 0x81 will become %81.
+
+=item *
+
+If the ascii_hex option is set to false, these bytes will be treated as Latin-1
+control characters and converted to the equivalent UTF-8 multi-byte sequences.
+
+=back
+
+When processing text strings you will almost certainly never encounter these
+bytes at all.  The most likely reason you would see them is if a malicious
+attacker was feeding random bytes to your application.  It is difficult to
+conceive of a scenario in which it makes sense to change this option from its
+default setting.
+
+=item overlong_fatal => 1/0
+
+An over-long UTF-8 byte sequence is one which uses more than the minimum number
+of bytes required to represent the character.  Use this option to specify how
+overlong sequences should be handled.
+
+=over 4
+
+=item *
+
+If the overlong_fatal option is set to false (the default) over-long sequences
+will be converted to the shortest normal UTF-8 sequence.  For example the input
+byte string "\xC0\xBCscript>" would be converted to "<script>".
+
+=item *
+
+If the overlong_fatal option is set to true, this module will die with an
+error when an overlong sequence is encountered.  You would probably want to
+use eval to trap and handle this scenario.
+
+=back
+
+There is a strong argument that overlong sequences are only ever encountered
+in malicious input and therefore they should always be rejected.
 
 =back
 
@@ -284,7 +393,7 @@ L<http://search.cpan.org/dist/Encoding-FixLatin/>
 
 =item * Source code repository
 
-L<http://github.com/grantm/encoding-fixlatin/tree/master>
+L<http://github.com/grantm/encoding-fixlatin>
 
 =back
 
@@ -296,7 +405,7 @@ Grant McLean, C<< <grantm at cpan.org> >>
 
 =head1 COPYRIGHT & LICENSE
 
-Copyright 2009 Grant McLean
+Copyright 2009-2010 Grant McLean
 
 This program is free software; you can redistribute it and/or modify it
 under the same terms as Perl itself.
