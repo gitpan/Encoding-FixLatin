@@ -13,8 +13,10 @@ meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.4.html
   version: 1.4
 name: Encoding-FixLatin
+recommends:
+  Encoding::FixLatin::XS: 1.00
 requires:
   perl: 5.008
 resources:
   repository: git://github.com/grantm/encoding-fixlatin.git
-version: 1.03
+version: 1.04

@@ -1,11 +1,12 @@
 package Encoding::FixLatin;
+{
+  $Encoding::FixLatin::VERSION = '1.04';
+}
 
 use warnings;
 use strict;
 
 require 5.008;
-
-our $VERSION = '1.03';
 
 use Carp     qw(croak);
 use Exporter qw(import);

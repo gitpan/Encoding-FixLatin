@@ -20,6 +20,9 @@
          }
       },
       "runtime" : {
+         "recommends" : {
+            "Encoding::FixLatin::XS" : "1.00"
+         },
          "requires" : {
             "perl" : "5.008"
          }
@@ -38,6 +41,6 @@
          "web" : "http://github.com/grantm/encoding-fixlatin"
       }
    },
-   "version" : "1.03"
+   "version" : "1.04"
 }
 
